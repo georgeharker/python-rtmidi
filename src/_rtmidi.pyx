@@ -1,6 +1,7 @@
-# -*- encoding: utf-8 -*-
-#cython: embedsignature=True
-#cython: language_level=3
+# cython: embedsignature = True
+# cython: language_level = 3
+# cython: show_performance_hints = False
+# distutils: language = c++
 #
 # rtmidi.pyx
 #
@@ -18,8 +19,7 @@ and Windows (MultiMedia System) operating systems.
 provides a thin wrapper around the RtMidi C++ interface. The API is basically
 the same as the C++ one but with the naming scheme of classes, methods and
 parameters adapted to the Python PEP-8 conventions and requirements of the
-Python package naming structure. **python-rtmidi** supports Python 3 (3.6, 3.7,
-3.8, and 3.9).
+Python package naming structure. **python-rtmidi** supports Python 3 (3.8+).
 
 
 Usage example
@@ -74,6 +74,9 @@ used to specify the low-level MIDI backend API to use when creating a
     Windows MultiMedia
 ``API_RTMIDI_DUMMY``
     RtMidi Dummy API (used when no suitable API was found)
+``API_RWEB_MIDI``
+    W3C Web MIDI API
+
 
 
 Error types
@@ -113,7 +116,7 @@ from libcpp.vector cimport vector
 
 __all__ = (
     'API_UNSPECIFIED', 'API_MACOSX_CORE', 'API_LINUX_ALSA', 'API_UNIX_JACK',
-    'API_WINDOWS_MM', 'API_RTMIDI_DUMMY', 'ERRORTYPE_DEBUG_WARNING',
+    'API_WINDOWS_MM', 'API_RTMIDI_DUMMY', 'API_WEB_MIDI', 'ERRORTYPE_DEBUG_WARNING',
     'ERRORTYPE_DRIVER_ERROR', 'ERRORTYPE_INVALID_DEVICE',
     'ERRORTYPE_INVALID_PARAMETER', 'ERRORTYPE_INVALID_USE',
     'ERRORTYPE_MEMORY_ERROR', 'ERRORTYPE_NO_DEVICES_FOUND',
@@ -125,16 +128,10 @@ __all__ = (
     'get_compiled_api', 'get_compiled_api_by_name', 'get_rtmidi_version'
 )
 
-if bytes is str:
-    string_types = (str, unicode)
-else:
-    string_types = (str,)
+cdef extern from "Python.h":
+    void Py_Initialize()
 
-
-cdef extern from "pyinit.h":
-    void py_init()
-
-py_init()
+Py_Initialize()
 
 # Declarations for RtMidi C++ classes and their methods we use
 
@@ -148,6 +145,7 @@ cdef extern from "RtMidi.h":
         LINUX_ALSA   "RtMidi::LINUX_ALSA"
         UNIX_JACK    "RtMidi::UNIX_JACK"
         WINDOWS_MM   "RtMidi::WINDOWS_MM"
+        WEB_MIDI     "RtMidi::WEB_MIDI_API"
         RTMIDI_DUMMY "RtMidi::RTMIDI_DUMMY"
 
     cdef enum ErrorType "RtMidiError::Type":
@@ -172,11 +170,11 @@ cdef extern from "RtMidi.h":
 
     ctypedef void (*RtMidiCallback)(double timeStamp,
                                     vector[unsigned char] *message,
-                                    void *userData)
+                                    void *userData) except * with gil
 
     ctypedef void (*RtMidiErrorCallback)(ErrorType errorType,
                                          const string errorText,
-                                         void *userData) except *
+                                         void *userData) except * with gil
 
     cdef cppclass RtMidi:
         void closePort() except *
@@ -200,13 +198,13 @@ cdef extern from "RtMidi.h":
     cdef cppclass RtMidiOut(RtMidi):
         Api RtMidiOut(Api rtapi, string clientName) except +
         Api getCurrentApi()
-        void sendMessage(vector[unsigned char] *message) nogil except *
+        void sendMessage(vector[unsigned char] *message) except *
 
 
 # internal functions
 
 cdef void _cb_func(double delta_time, vector[unsigned char] *msg_v,
-                   void *cb_info) with gil:
+                   void *cb_info) except * with gil:
     """Wrapper for a Python callback function for MIDI input."""
     func, data = (<object> cb_info)
     message = [msg_v.at(i) for i in range(msg_v.size())]
@@ -221,16 +219,12 @@ cdef void _cb_error_func(ErrorType errorType, const string &errorText,
 
 
 def _to_bytes(name):
-    """Convert a unicode (Python 2) or str (Python 3) object into bytes."""
-    # 'bytes' == 'str' in Python 2 but a separate type in Python 3
-    if isinstance(name, string_types):
-        try:
-            name = bytes(name, 'utf-8')  # Python 3
-        except TypeError:
-            name = name.encode('utf-8')  # Python 2
+    """Convert a str object into bytes."""
+    if isinstance(name, str):
+        name = bytes(name, 'utf-8')  # Python 3
 
     if not isinstance(name, bytes):
-        raise TypeError("name must be bytes or (unicode) string.")
+        raise TypeError("name must be a bytes instance.")
 
     return name
 
@@ -244,6 +238,7 @@ API_MACOSX_CORE = MACOSX_CORE
 API_LINUX_ALSA = LINUX_ALSA
 API_UNIX_JACK = UNIX_JACK
 API_WINDOWS_MM = WINDOWS_MM
+API_WEB_MIDI = WEB_MIDI
 API_RTMIDI_DUMMY = RTMIDI_DUMMY
 
 # export error values to Python
@@ -266,7 +261,7 @@ ERRORTYPE_THREAD_ERROR = ERR_THREAD_ERROR
 class RtMidiError(Exception):
     """Base general RtMidi exception.
 
-    All other exceptions in this module derive form this exception.
+    All other exceptions in this module derive from this exception.
 
     Instances have a ``type`` attribute that maps to one of the
     ``ERRORTYPE_*`` constants.
@@ -512,7 +507,7 @@ cdef class MidiBase:
         by ``encoding``. If ``encoding`` is ``"auto"`` (the default), then an
         appropriate encoding is chosen based on the system and the used backend
         API. If ``encoding`` is ``None``, the name is returned un-decoded, i.e.
-        as type ``str`` in Python 2 or ``bytes`` in Python 3.
+        as type ``bytes``.
 
         """
         cdef string name = self.baseptr().getPortName(port)
@@ -529,7 +524,7 @@ cdef class MidiBase:
         by ``encoding``. If ``encoding`` is ``"auto"`` (the default), then an
         appropriate encoding is chosen based on the system and the used backend
         API. If ``encoding`` is ``None``, the names are returned un-decoded,
-        i.e. as type ``str`` in Python 2 or ``bytes`` in Python 3.
+        i.e. as type ``bytes``.
 
         """
         return [self.get_port_name(p, encoding=encoding)
@@ -556,8 +551,8 @@ cdef class MidiBase:
 
         You can optionally pass a name for the RtMidi port with the ``name``
         keyword or the second positional argument. Names with non-ASCII
-        characters in them have to be passed as unicode or UTF-8 encoded
-        strings in Python 2. The default name is "RtMidi input" resp. "RtMidi
+        characters in them have to be passed as a (unicode) str or UTF-8
+        encoded bytes. The default name is "RtMidi input" resp. "RtMidi
         output".
 
         .. note::
@@ -609,8 +604,8 @@ cdef class MidiBase:
 
         You can optionally pass a name for the RtMidi port with the ``name``
         keyword or the second positional argument. Names with non-ASCII
-        characters in them have to be passed as unicode or UTF-8 encoded
-        strings in Python 2. The default name is "RtMidi virtual input" resp.
+        characters in them have to be passed as a (unicode) str or UTF-8
+        encoded bytes. The default name is "RtMidi virtual input" resp.
         "RtMidi virtual output".
 
         .. note::
@@ -667,8 +662,8 @@ cdef class MidiBase:
     def set_client_name(self, name):
         """Set the name of the MIDI client.
 
-        Names with non-ASCII characters in them have to be passed as unicode
-        or UTF-8 encoded strings in Python 2.
+        Names with non-ASCII characters in them have to be passed as a (unicode)
+        str or UTF-8 encoded bytes.
 
         Currently only supported by the ALSA API backend.
 
@@ -691,8 +686,8 @@ cdef class MidiBase:
     def set_port_name(self, name):
         """Set the name of the currently opened port.
 
-        Names with non-ASCII characters in them have to be passed as unicode
-        or UTF-8 encoded strings in Python 2.
+        Names with non-ASCII characters in them have to be passed as a (unicode)
+        str or UTF-8 encoded bytes.
 
         Currently only supported by the ALSA and JACK API backends.
 
@@ -768,7 +763,7 @@ cdef class MidiIn(MidiBase):
 
     You can optionally pass a name for the MIDI client with the ``name``
     keyword or the second positional argument. Names with non-ASCII characters
-    in them have to be passed as unicode or UTF-8 encoded strings in Python 2.
+    in them have to be passed as a (unicode) str or UTF-8 encoded bytes.
     The default name is ``"RtMidiIn Client"``.
 
     .. note::
@@ -980,7 +975,7 @@ cdef class MidiOut(MidiBase):
 
     You can optionally pass a name for the MIDI client with the ``name``
     keyword or the second positional argument. Names with non-ASCII characters
-    in them have to be passed as unicode or UTF-8 encoded strings in Python 2.
+    in them have to be passed as a (unicode) str or UTF-8 encoded bytes.
     The default name is ``"RtMidiOut Client"``.
 
     .. note::
@@ -1075,7 +1070,7 @@ cdef class MidiOut(MidiBase):
         element representing one byte of the MIDI message.
 
         Normal MIDI messages have a length of one to three bytes, but you can
-        also send system exclusive messages, which can be arbitrarily long, via
+        also send System Exclusive messages, which can be arbitrarily long, via
         this method.
 
         No check is made whether the passed data constitutes a valid MIDI
@@ -1083,9 +1078,7 @@ cdef class MidiOut(MidiBase):
         must be a start-of-sysex status byte, i.e. 0xF0.
 
         .. note:: with some backend APIs (notably ```WINDOWS_MM``) this function
-            blocks until the whole message is sent. While sending the message
-            the global interpreter lock is released, so multiple Python threads
-            can send messages using *different* MidiOut instances concurrently.
+            blocks until the whole message is sent.
 
         Exceptions:
 
@@ -1096,15 +1089,18 @@ cdef class MidiOut(MidiBase):
         """
         cdef vector[unsigned char] msg_v
 
-        if not message:
-            raise ValueError("'message' must not be empty.")
-
-        if len(message) > 3 and message[0] != 0xF0:
-            raise ValueError("'message' longer than 3 bytes but does not "
-                             "start with 0xF0.")
+        try:
+            msg_v.reserve(len(message))
+        except TypeError:
+            pass
 
         for c in message:
             msg_v.push_back(c)
 
-        with nogil:
-            self.thisptr.sendMessage(&msg_v)
+        if msg_v.size() == 0:
+            raise ValueError("'message' must not be empty.")
+        elif msg_v.size() > 3 and msg_v.at(0) != 0xF0:
+            raise ValueError("'message' longer than 3 bytes but does not "
+                             "start with 0xF0.")
+
+        self.thisptr.sendMessage(&msg_v)

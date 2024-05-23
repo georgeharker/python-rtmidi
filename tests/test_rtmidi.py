@@ -1,68 +1,18 @@
 #!/usr/bin/env python
-# -*- coding: utf-8 -*-
 """Unit tests for the rtmidi module."""
 
 import time
 import unittest
 
+import pytest
+
 import rtmidi
-
-
-if bytes is str:
-    string_types = (str, unicode)  # noqa:F821
-else:
-    string_types = (str,)
-
-
-class StaticFunctionsTests(unittest.TestCase):
-    def test_get_api_display_name(self):
-        # Why not 'Unspecified'?
-        self.assertEqual(rtmidi.get_api_display_name(rtmidi.API_LINUX_ALSA), 'ALSA')
-        self.assertEqual(rtmidi.get_api_display_name(rtmidi.API_MACOSX_CORE), 'CoreMidi')
-        self.assertEqual(rtmidi.get_api_display_name(rtmidi.API_RTMIDI_DUMMY), 'Dummy')
-        self.assertEqual(rtmidi.get_api_display_name(rtmidi.API_UNIX_JACK), 'Jack')
-        self.assertEqual(rtmidi.get_api_display_name(rtmidi.API_UNSPECIFIED), 'Unknown')
-        self.assertEqual(rtmidi.get_api_display_name(rtmidi.API_WINDOWS_MM), 'Windows MultiMedia')
-
-    def test_get_api_name(self):
-        self.assertEqual(rtmidi.get_api_name(rtmidi.API_LINUX_ALSA), 'alsa')
-        self.assertEqual(rtmidi.get_api_name(rtmidi.API_MACOSX_CORE), 'core')
-        self.assertEqual(rtmidi.get_api_name(rtmidi.API_RTMIDI_DUMMY), 'dummy')
-        self.assertEqual(rtmidi.get_api_name(rtmidi.API_UNIX_JACK), 'jack')
-        self.assertEqual(rtmidi.get_api_name(rtmidi.API_UNSPECIFIED), 'unspecified')
-        self.assertEqual(rtmidi.get_api_name(rtmidi.API_WINDOWS_MM), 'winmm')
-
-    def test_get_compiled_api(self):
-        apilist = rtmidi.get_compiled_api()
-        self.assertTrue(isinstance(apilist, list))
-        self.assertTrue(len(apilist) >= 1)
-        for api in apilist:
-            self.assertTrue(api <= rtmidi.API_RTMIDI_DUMMY)
-
-    def test_get_compiled_api_by_name(self):
-        for api, name in (
-                (rtmidi.API_LINUX_ALSA, 'alsa'),
-                (rtmidi.API_MACOSX_CORE, 'core'),
-                (rtmidi.API_RTMIDI_DUMMY, 'dummy'),
-                (rtmidi.API_UNIX_JACK, 'jack'),
-                (rtmidi.API_WINDOWS_MM, 'winmm')):
-
-            res = rtmidi.get_compiled_api_by_name(name)
-
-            if api in rtmidi.get_compiled_api():
-                self.assertEqual(res, api)
-            else:
-                self.assertEqual(res, rtmidi.API_UNSPECIFIED)
-
-    def test_get_rtmidi_version(self):
-        version = rtmidi.get_rtmidi_version()
-        self.assertTrue(isinstance(version, string_types))
-        self.assertEqual(version, '4.0.0')
 
 
 class BaseTests:
     NOTE_ON = [0x90, 48, 100]
     NOTE_OFF = [0x80, 48, 16]
+    SYSEX_IDENTITY_REQUEST = [0xF0, 0x7E, 0x7F, 6, 1, 0xF7]
     IN_CLIENT_NAME = "RtMidiTestCase In"
     OUT_CLIENT_NAME = "RtMidiTestCase Out"
     IN_PORT_NAME = 'testin'
@@ -118,10 +68,36 @@ class VirtualPortsSupportedTests:
         self.midi_out.send_message(self.NOTE_ON)
         self.midi_out.send_message(self.NOTE_OFF)
         time.sleep(self.DELAY)
-        message_1, _ = self.midi_in.get_message()
-        message_2, _ = self.midi_in.get_message()
-        self.assertEqual(message_1, self.NOTE_ON)
-        self.assertEqual(message_2, self.NOTE_OFF)
+        event_1 = self.midi_in.get_message()
+        event_2 = self.midi_in.get_message()
+        self.assertTrue(isinstance(event_1, tuple))
+        self.assertTrue(isinstance(event_2, tuple))
+        self.assertEqual(event_1[0], self.NOTE_ON)
+        self.assertEqual(event_2[0], self.NOTE_OFF)
+
+    def test_send_supports_iterator(self):
+        self.set_up_loopback()
+        self.midi_out.send_message(iter(self.NOTE_ON))
+        time.sleep(self.DELAY)
+        event = self.midi_in.get_message()
+        self.assertTrue(isinstance(event, tuple))
+        self.assertEqual(event[0], self.NOTE_ON)
+
+    def test_send_raises_if_message_too_long(self):
+        self.assertRaises(ValueError, self.midi_out.send_message, [1, 2, 3, 4])
+
+    def test_send_raises_if_message_empty(self):
+        self.assertRaises(ValueError, self.midi_out.send_message, [])
+        self.assertRaises(ValueError, self.midi_out.send_message, iter([]))
+
+    def test_send_accepts_sysex(self):
+        self.set_up_loopback()
+        self.midi_in.ignore_types(sysex=False)
+        self.midi_out.send_message(self.SYSEX_IDENTITY_REQUEST)
+        time.sleep(self.DELAY)
+        event = self.midi_in.get_message()
+        self.assertTrue(isinstance(event, tuple))
+        self.assertEqual(event[0], self.SYSEX_IDENTITY_REQUEST)
 
     def test_callback(self):
         messages = []
@@ -234,6 +210,7 @@ if rtmidi.API_LINUX_ALSA in rtmidi.get_compiled_api():
 
 
 if rtmidi.API_UNIX_JACK in rtmidi.get_compiled_api():
+    @pytest.mark.jack
     class JACKTestCase(BaseTests, SetPortNameSupportedTests, SetClientNameUnsupportedTests,
                        VirtualPortsSupportedTests, unittest.TestCase):
         API = rtmidi.API_UNIX_JACK
