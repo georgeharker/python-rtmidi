@@ -51,3 +51,5 @@ rtmidi/version.py
 
 # Geany project
 python-rtmidi.geany
+/build
+.DS_Store
